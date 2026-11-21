@@ -579,6 +579,7 @@ void LButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam)
 				case BUTTON_PLAYAGAIN:
 				{
 					// TODO: 处理按钮操作。
+					InitStage(hWnd, STAGE_STARTMENU);  // 回到标题页（InitStage 会清理上一局的单位并重置地图）
 					break;
 				}
 				default: break;
@@ -727,6 +728,23 @@ void FinishMatch(HWND hWnd, int stageId)
 void SettleMatch(HWND hWnd)
 {
 	// TODO: 根据单位存活状态判定对局结果。
+	if (currentStage == NULL || units.size() < 2) return;
+	bool p0Alive = units[0]->alive;  // 单人：玩家；双人：玩家1
+	bool p1Alive = units[1]->alive;  // 单人：电脑；双人：玩家2
+	if (p0Alive && p1Alive) return;  // 都活着，对局继续
+
+	if (currentStage->stageID == STAGE_1)
+	{
+		// 单人：玩家死了就算输（同归于尽也算输），否则就是电脑死了，玩家赢
+		if (!p0Alive) { matchWinner = -1; FinishMatch(hWnd, STAGE_LOSE); }
+		else          { matchWinner = 0;  FinishMatch(hWnd, STAGE_WIN); }
+	}
+	else if (currentStage->stageID == STAGE_2)
+	{
+		// 双人：同归于尽显示失败；否则活着的一方获胜，记下胜者下标
+		if (!p0Alive && !p1Alive) { matchWinner = -1; FinishMatch(hWnd, STAGE_LOSE); }
+		else { matchWinner = p0Alive ? 0 : 1; FinishMatch(hWnd, STAGE_WIN); }
+	}
 }
 
 void TimerUpdate(HWND hWnd, WPARAM wParam, LPARAM lParam)
@@ -758,7 +776,8 @@ void TimerUpdate(HWND hWnd, WPARAM wParam, LPARAM lParam)
 		KillTimer(hWnd, timerId);
 	}
 
-	if (currentStage != NULL && currentStage->stageID >= STAGE_1 && currentStage->stageID <= STAGE_2 && currentStage->timerOn == true) UpdateUnits(hWnd);
+	// 只有每 30ms 的主刷新计时器才推动人物移动，其它计时器（倒计时、泡泡、冷却等）到点时不额外走一步
+	if (timerId == TIMER_GAMETIMER && currentStage != NULL && currentStage->stageID >= STAGE_1 && currentStage->stageID <= STAGE_2 && currentStage->timerOn == true) UpdateUnits(hWnd);
 
 	//刷新显示
 	InvalidateRect(hWnd, NULL, FALSE);
@@ -1312,6 +1331,39 @@ void explode(HWND hWnd, Bubble* bubble)
 void DrawResultScreen(HDC hdc_memBuffer, HDC hdc_loadBmp)
 {
 	// TODO: 绘制胜利、失败和超时结算画面。
+	int stage = currentStage->stageID;
+	if (stage != STAGE_WIN && stage != STAGE_LOSE && stage != STAGE_TIMEOUT) return;  // 只在结算页绘制
+
+	// 按场景选择结算图：默认"时间到"，胜利图放大 2 倍，失败和时间到放大 1.5 倍
+	HBITMAP bmp = bmp_TimeOut;
+	int w = TIMEOUT_SIZE_X, h = TIMEOUT_SIZE_Y;
+	double scale = 1.5;
+	if (stage == STAGE_WIN)  { bmp = bmp_Win;  w = WIN_SIZE_X;  h = WIN_SIZE_Y; scale = 2; }
+	if (stage == STAGE_LOSE) { bmp = bmp_Lose; w = LOSE_SIZE_X; h = LOSE_SIZE_Y; }
+
+	// 结算图水平居中，纵坐标 200
+	SelectObject(hdc_loadBmp, bmp);
+	TransparentBlt(
+		hdc_memBuffer,
+		(int)(WINDOW_WIDTH - scale * w) / 2, 200,  //界面上起始绘制点
+		(int)(scale * w), (int)(scale * h),        //界面上绘制宽度高度
+		hdc_loadBmp,
+		0, 0,                                      //位图上起始绘制点
+		w, h,                                      //位图上绘制宽度高度
+		RGB(255, 255, 255));
+
+	// 双人模式胜利时，在左侧画出胜者的箭头和形象（单人模式对手是 RIVAL，不会进入）
+	if (stage == STAGE_WIN && units.size() >= 2 && units[1]->side == UNIT_SIDE_MATE && matchWinner >= 0)
+	{
+		Unit* winner = units[matchWinner];
+		SelectObject(hdc_loadBmp, matchWinner == 0 ? bmp_Arrow : bmp_Arrow2);  // 玩家1、玩家2箭头颜色不同
+		TransparentBlt(hdc_memBuffer, 70, 110, ARROW_SIZE_X, ARROW_SIZE_Y,
+			hdc_loadBmp, 0, 0, ARROW_SIZE_X, ARROW_SIZE_Y, RGB(255, 255, 255));
+
+		SelectObject(hdc_loadBmp, winner->img);  // 取角色图的第一帧，放大 2 倍
+		TransparentBlt(hdc_memBuffer, 60, 210, (int)(UNIT_SIZE_X * 2), (int)(UNIT_SIZE_Y * 2),
+			hdc_loadBmp, 0, 0, UNIT_BITMAP_SIZE_X, UNIT_BITMAP_SIZE_Y, RGB(255, 255, 255));
+	}
 }
 
 void DrawGameHud(HDC hdc_memBuffer, HDC hdc_loadBmp)
@@ -1624,6 +1676,12 @@ void OpenPauseMenu(HWND hWnd)
 void ShowResultButtons()
 {
 	// TODO: 设置结算页按钮的显示状态。
+	// 结算页只显示"再玩一次"按钮，其余全部隐藏
+	for (int i = 0; i < (int)buttons.size(); i++)
+	{
+		Button* button = buttons[i];
+		button->visible = (button->buttonID == BUTTON_PLAYAGAIN);
+	}
 }
 
 // TODO: 死亡检测 —— 开局血量传入 1，被炸到即死
@@ -1696,8 +1754,8 @@ void CloseBattleBgm()
 // TODO: 倒计时 —— 开局 90 秒，每秒减 1
 void StartCountdown(HWND hWnd)
 {
-	count_down = 10;
-	SetTimer(hWnd, TIMER, 1000, NULL);
+	count_down = 90;                    // 每局 90 秒
+	SetTimer(hWnd, TIMER, 1000, NULL);  // 每 1000ms 触发一次 TickCountdown
 }
 
 // TODO: 倒计时 —— 每秒减 1，减到 0 进入超时；减到 30 时全体移速提高
@@ -1706,6 +1764,9 @@ void TickCountdown(HWND hWnd)
 	if (count_down > 0)
 	{
 		count_down--;
+		// 减到 0 立即进入超时结算（结算时会关掉 TIMER，不会重复触发）
+		if (count_down == 0)
+			FinishMatch(hWnd, STAGE_TIMEOUT);
 	}
 
 }
