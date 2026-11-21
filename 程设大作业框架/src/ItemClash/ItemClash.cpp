@@ -1194,7 +1194,19 @@ bool Collision_detection(HWND hWnd, Unit* unit)
 		}
 	}
 
-	// 泡泡：等第 9 章完成 PlaceBubble 后再补
+	// 泡泡：和障碍格一样会挡路
+	int unitRow = unit->y / BG_CELL_HEIGHT;
+	int unitCol = unit->x / BG_CELL_WIDTH;
+	for (int i = 0; i < (int)bubbles.size(); i++) {
+		int row = bubbles[i]->y / BG_CELL_HEIGHT;
+		int col = bubbles[i]->x / BG_CELL_WIDTH;
+		if (row == unitRow && col == unitCol) continue;  // 人还站在这颗泡泡上（刚放下），允许走出去
+
+		double left = col * BG_CELL_WIDTH;
+		double top = row * BG_CELL_HEIGHT;
+		if (UnitHitsRect(unit, left, top, left + BG_CELL_WIDTH, top + BG_CELL_HEIGHT, 16, 28, true))
+			return true;
+	}
 	return false;
 }
 
@@ -1202,6 +1214,33 @@ bool Collision_detection(HWND hWnd, Unit* unit)
 void PlaceBubble(HWND hWnd, Unit* unit)
 {
 	// TODO: 检查放置条件并创建炸弹。
+	// 暂停中、已死亡或没有可用泡泡时不能放
+	if (!currentStage->timerOn || !unit->alive || unit->bubblesleft <= 0) return;
+
+	// 人物中心所在的格子
+	int row = unit->y / BG_CELL_HEIGHT;
+	int col = unit->x / BG_CELL_WIDTH;
+
+	// 这一格已经有泡泡就不再放
+	for (int i = 0; i < (int)bubbles.size(); i++)
+		if (bubbles[i]->y / BG_CELL_HEIGHT == row && bubbles[i]->x / BG_CELL_WIDTH == col) return;
+
+	// 创建泡泡，放在格子中心
+	Bubble* bubble = new Bubble();
+	bubble->img = bmp_Bubble;
+	bubble->x = col * BG_CELL_WIDTH + BG_CELL_WIDTH / 2;
+	bubble->y = row * BG_CELL_HEIGHT + BG_CELL_HEIGHT / 2;
+	bubble->count_down_duration = 2500;          // 2.5 秒后爆炸
+	bubble->timer_id = next_bubble_timer_id++;
+	bubble->frame_id = 0;
+	bubble->frame_colume = FRAMES_BUBBLE[0];
+	SetBubblePower(unit, bubble);                // 决定爆炸范围
+	bubbles.push_back(bubble);
+	SetTimer(hWnd, bubble->timer_id, bubble->count_down_duration, NULL);  // 到时由 TimerUpdate 调用 explode
+
+	// 扣掉一颗，并开始补充冷却
+	unit->bubblesleft--;
+	StartBubbleCooldown(hWnd, unit);
 }
 
 //更新泡泡的帧动画
@@ -1219,6 +1258,52 @@ void UpdateBubbles(HWND hWnd)
 void explode(HWND hWnd, Bubble* bubble)
 {
 	// TODO: 计算爆炸范围，处理阻挡、毁砖、掉落和命中。
+	// 在泡泡中心显示爆炸图片，200ms 后由 TimerUpdate 自动删除
+	Explosion* explosion = new Explosion();
+	explosion->img = bmp_explosion;
+	explosion->x = bubble->x;
+	explosion->y = bubble->y;
+	explosion->duration = 200;
+	explosion->timer_id = next_explosion_timer_id++;
+	explosions.push_back(explosion);
+	SetTimer(hWnd, explosion->timer_id, explosion->duration, NULL);
+
+	// flamed 记录哪些格子着火，泡泡所在格一定着火
+	bool flamed[12][12] = { false };
+	int row = bubble->y / BG_CELL_HEIGHT;
+	int col = bubble->x / BG_CELL_WIDTH;
+	flamed[row][col] = true;
+
+	// 向上、下、左、右四个方向传播
+	int dr[4] = { -1, 1, 0, 0 };
+	int dc[4] = { 0, 0, -1, 1 };
+	for (int dir = 0; dir < 4; dir++)
+	{
+		for (int k = 1; k <= bubble->range; k++)
+		{
+			int r = row + dr[dir] * k;
+			int c = col + dc[dir] * k;
+			if (!InMap(r, c)) break;                        // 出了棋盘
+			if (map[r][c] == 2 || map[r][c] == 3) break;    // 树和蓝箱子挡住火焰
+			flamed[r][c] = true;
+			if (map[r][c] == 1)                             // 木箱：炸毁后火焰停下
+			{
+				map[r][c] = 0;
+				if (rand() % 2 == 0) item[r][c] = rand() % 4;  // 一半概率掉落道具
+				break;
+			}
+		}
+	}
+
+	// 站在着火格子上的人受到伤害
+	for (int i = 0; i < (int)units.size(); i++)
+	{
+		Unit* unit = units[i];
+		ApplyBlastHit(unit, flamed[unit->y / BG_CELL_HEIGHT][unit->x / BG_CELL_WIDTH]);
+	}
+
+	// 统一判断胜负
+	SettleMatch(hWnd);
 }
 
 
@@ -1629,12 +1714,16 @@ void TickCountdown(HWND hWnd)
 void StartBubbleCooldown(HWND hWnd, Unit* unit)
 {
 	// TODO: 登记炸弹数量的补充计时。
+	// 3 秒后由 TimerUpdate 调用 FinishBubbleCooldown 补回一颗
+	BindTimer(cdTimers, hWnd, unit, next_CD_timer_id, 3000);
 }
 
 // TODO: 泡泡冷却 —— 冷却结束，补回一颗泡泡
 void FinishBubbleCooldown(Unit* unit)
 {
-	unit->bubblesleft++;
+	// 补回一颗，但不超过容量上限
+	if (unit->bubblesleft < unit->max_bomb)
+		unit->bubblesleft++;
 }
 
 // TODO: 电脑走位 —— 躲开泡泡的爆炸范围，并朝玩家走近
@@ -1683,12 +1772,25 @@ void ApplyPowerPotion(Unit* unit)
 void SetBubblePower(Unit* unit, Bubble* newBubble)
 {
 	// TODO: 设置本次炸弹的爆炸范围。
+	// 默认范围 1 格；有加强次数时范围 2 格，并消耗一次
+	newBubble->range = 1;
+	if (unit->enhance_bomb > 0) {
+		newBubble->range = 2;
+		unit->enhance_bomb--;
+	}
 }
 
 // TODO: 死亡检测 —— 血量减到 0 即死亡
 void ApplyBlastHit(Unit* unit, bool inFlame)
 {
 	// TODO: 处理单位受击和死亡状态。
+	// 已死亡或没被火焰命中则不处理
+	if (!unit->alive || !inFlame) return;
+
+	// 扣 1 点血，血量归零即死亡
+	unit->health--;
+	if (unit->health <= 0)
+		unit->alive = false;
 }
 void Paint(HWND hWnd)
 {
