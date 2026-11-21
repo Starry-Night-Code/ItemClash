@@ -165,18 +165,22 @@ int map[][12] = {
 	{0,0,0,0,0,0,0,0,0,0,0,0},
 };
 //初始地图
+// 0 沙地  1 木箱（可炸毁）  2 椰子树（不可炸）  3 蓝箱子（不可炸）
+// 中心对称：第 r 行 = 第 (11-r) 行倒过来，保证双方地形公平
+// 玩家1出生在 [1][1]，玩家2/AI 出生在 [10][8]，周围都留了逃生空地
+// 最外圈留空作为环形通道，双方不炸箱子也能互相走到（方便 AI 追人）
 int map1[][12] = {
 	{0,0,0,0,0,0,0,0,0,0,0,0},
-	{0,0,0,0,0,0,0,0,0,0,0,0},
-	{0,0,0,0,0,0,0,0,0,0,0,0},
-	{0,0,0,0,0,0,0,0,0,0,0,0},
-	{0,0,0,0,0,0,0,0,0,0,0,0},
-	{0,0,0,0,0,0,0,0,0,0,0,0},
-	{0,0,0,0,0,0,0,0,0,0,0,0},
-	{0,0,0,0,0,0,0,0,0,0,0,0},
-	{0,0,0,0,0,0,0,0,0,0,0,0},
-	{0,0,0,0,0,0,0,0,0,0,0,0},
-	{0,0,0,0,0,0,0,0,0,0,0,0},
+	{0,0,0,0,2,1,1,2,1,1,1,0},	// [1][1] 玩家1出生点
+	{0,0,2,1,0,1,1,0,1,2,1,0},
+	{0,1,1,0,0,3,3,0,0,1,1,0},
+	{0,2,0,0,2,1,1,2,0,0,2,0},
+	{0,1,1,3,0,0,0,0,3,1,1,0},
+	{0,1,1,3,0,0,0,0,3,1,1,0},
+	{0,2,0,0,2,1,1,2,0,0,2,0},
+	{0,1,1,0,0,3,3,0,0,1,1,0},
+	{0,1,2,1,0,1,1,0,1,2,0,0},
+	{0,1,1,1,2,1,1,2,0,0,0,0},	// [10][8] 玩家2/AI出生点
 	{0,0,0,0,0,0,0,0,0,0,0,0},
 };
 //初始道具掉落编辑0-3：加速、加血、加泡泡、加威力
@@ -1176,6 +1180,21 @@ bool UnitHitsRect(Unit* unit, double left, double top, double right, double bott
 bool Collision_detection(HWND hWnd, Unit* unit)
 {
 	// TODO: 检测边界、地形、道具和炸弹。
+	// 边界 + 地形：把棋盘外面一圈（第 -1 行/列、第 12 行/列）也当作墙，统一处理
+	for (int i = -1; i <= 12; i++) {
+		for (int j = -1; j <= 12; j++) {
+			if (InMap(i, j) && map[i][j] == 0) continue;  // 棋盘内的空地不挡路
+
+			// 第 [i][j] 格的矩形范围
+			double left = j * BG_CELL_WIDTH;
+			double top = i * BG_CELL_HEIGHT;
+			// 16：左右走时人物的上下判定半径；28：上下走时人物的判定半径
+			if (UnitHitsRect(unit, left, top, left + BG_CELL_WIDTH, top + BG_CELL_HEIGHT, 16, 28, true))
+				return true;
+		}
+	}
+
+	// 泡泡：等第 9 章完成 PlaceBubble 后再补
 	return false;
 }
 
@@ -1386,6 +1405,26 @@ void DrawGameHud(HDC hdc_memBuffer, HDC hdc_loadBmp)
 void DrawHelpScreen(HDC hdc_memBuffer, HDC hdc_loadBmp)
 {
 	// TODO: 绘制游戏帮助页。
+	if (currentStage->stageID != STAGE_HELP) return;  // 只在帮助页绘制
+
+	// 背景图（1024x768）已包含操作按键和道具介绍，直接铺满
+	SelectObject(hdc_loadBmp, bmp_Help_bg);
+	BitBlt(hdc_memBuffer, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, hdc_loadBmp, 0, 0, SRCCOPY);
+
+	// 在底部空白处补充背景图里没有的规则说明
+	HFONT font = CreateFont(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+		0, 0, 0, 0, L"微软雅黑");
+	HGDIOBJ oldFont = SelectObject(hdc_memBuffer, font);
+	SetBkMode(hdc_memBuffer, TRANSPARENT);         // 文字背景透明
+	SetTextColor(hdc_memBuffer, RGB(60, 60, 60));  // 深灰色文字
+	RECT rect = { 0, 722, WINDOW_WIDTH, 752 };     // 文字区域：底部一整行
+	DrawText(hdc_memBuffer,
+		L"Esc 暂停 | 泡泡放下后会十字爆炸并炸毁砖块 | 炸倒对手即获胜，90 秒内未分胜负则超时",
+		-1, &rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+	// 恢复原字体并释放新建的字体
+	SelectObject(hdc_memBuffer, oldFont);
+	DeleteObject(font);
 }
 
 void DrawTitleScreen(HDC hdc_memBuffer, HDC hdc_loadBmp)
@@ -1473,10 +1512,8 @@ void ShowTitleButtons()
 	for (int i = 0; i < (int)buttons.size(); i++)
 	{
 		Button* button = buttons[i];
-		if (button->buttonID == BUTTON_STARTGAME)
-			button->visible = true;
-		else
-			button->visible = false;
+		// 标题页只显示"开始游戏"和"帮助"两个按钮，其余全部隐藏
+		button->visible = (button->buttonID == BUTTON_STARTGAME || button->buttonID == BUTTON_HELP);
 	}
 }
 
@@ -1484,6 +1521,12 @@ void ShowTitleButtons()
 void ShowHelpButtons()
 {
 	// TODO: 设置帮助页按钮的显示状态。
+	// 帮助页只显示右上角的"返回"按钮，其余全部隐藏
+	for (int i = 0; i < (int)buttons.size(); i++)
+	{
+		Button* button = buttons[i];
+		button->visible = (button->buttonID == BUTTON_BACK);
+	}
 }
 
 // TODO: 暂停界面 —— Esc 暂停对局，背景音乐停止，并显示继续、重开、回标题
