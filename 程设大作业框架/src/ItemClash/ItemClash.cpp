@@ -169,14 +169,15 @@ int map[][12] = {
 // 中心对称：第 r 行 = 第 (11-r) 行倒过来，保证双方地形公平
 // 玩家1出生在 [1][1]，玩家2/AI 出生在 [10][8]，周围都留了逃生空地
 // 最外圈留空作为环形通道，双方不炸箱子也能互相走到（方便 AI 追人）
+// 中间 2x4 空地有左右两个入口（第 5 行左侧、第 6 行右侧），不用炸箱子也能进入
 int map1[][12] = {
 	{0,0,0,0,0,0,0,0,0,0,0,0},
 	{0,0,0,0,2,1,1,2,1,1,1,0},	// [1][1] 玩家1出生点
 	{0,0,2,1,0,1,1,0,1,2,1,0},
 	{0,1,1,0,0,3,3,0,0,1,1,0},
 	{0,2,0,0,2,1,1,2,0,0,2,0},
-	{0,1,1,3,0,0,0,0,3,1,1,0},
-	{0,1,1,3,0,0,0,0,3,1,1,0},
+	{0,0,0,0,0,0,0,0,3,1,1,0},	// 第 5 行左侧打通：从左边进入中间空地
+	{0,1,1,3,0,0,0,0,0,0,0,0},	// 第 6 行右侧打通：从右边进入中间空地
 	{0,2,0,0,2,1,1,2,0,0,2,0},
 	{0,1,1,0,0,3,3,0,0,1,1,0},
 	{0,1,2,1,0,1,1,0,1,2,0,0},
@@ -468,7 +469,15 @@ void KeyDown(HWND hWnd, WPARAM wParam, LPARAM lParam)
 		keySDown = true;
 		break;
 	case VK_SPACE:
-		if (currentStage->stageID == STAGE_CHOOSE1) {InitStage(hWnd, STAGE_1); break;}
+		if (currentStage->stageID == STAGE_CHOOSE1) {
+			if (P1done) InitStage(hWnd, STAGE_1);  // 第二次空格：对手也选好了，进入对局
+			else {
+				P1done = true;                      // 第一次空格：确认自己的角色，接着选对手
+				for (int i = 0; i < MAX_ROLE_NUM; i++)  // 对手箭头默认放在自己右边一个角色上，避免重复
+					pointer2[i] = pointer[(i + MAX_ROLE_NUM - 1) % MAX_ROLE_NUM];
+			}
+			break;
+		}
 		if (currentStage->stageID == STAGE_CHOOSE2 && P2done == true) {InitStage(hWnd, STAGE_2); break;}
 		if (currentStage->stageID == STAGE_CHOOSE2 && P2done == false) P1done = true;
 		PlaceBubbleByKey(hWnd, VK_SPACE);
@@ -555,7 +564,7 @@ void LButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam)
 				}
 				case BUTTON_SOLO:
 				{
-					InitStage(hWnd, STAGE_1); break;
+					InitStage(hWnd, STAGE_CHOOSE1); break;  // 先进入单人选角页
 				}
 				case BUTTON_DUO:
 				{
@@ -564,16 +573,22 @@ void LButtonDown(HWND hWnd, WPARAM wParam, LPARAM lParam)
 				case BUTTON_CONTINUE:
 				{
 					// TODO: 处理按钮操作。
+					ResumeBattleBgm();               // 接着播放对局音乐
+					currentStage->timerOn = true;    // 恢复计时器，游戏继续
+					for (int j = 0; j < (int)buttons.size(); j++)
+						buttons[j]->visible = false; // 隐藏暂停菜单
 					break;
 				}
 				case BUTTON_RESTART:
 				{
 					// TODO: 处理按钮操作。
+					InitStage(hWnd, currentStage->stageID);  // 按当前模式（单人/双人）重新开一局
 					break;
 				}
 				case BUTTON_HOMEPAGE:
 				{
 					// TODO: 处理按钮操作。
+					InitStage(hWnd, STAGE_STARTMENU);        // 回到标题页（会清理当前对局）
 					break;
 				}
 				case BUTTON_PLAYAGAIN:
@@ -659,6 +674,12 @@ void ResetMapAndItems()
 void PlayBgm(const wchar_t* alias, const wchar_t* openCmd)
 {
 	// TODO: 播放指定的背景音乐。
+	wchar_t cmd[160];
+	wsprintf(cmd, L"close %s", alias);       // 先关掉同名音乐，防止重复打开（没打开过也不影响）
+	mciSendString(cmd, NULL, 0, NULL);
+	mciSendString(openCmd, NULL, 0, NULL);   // 打开音乐文件
+	wsprintf(cmd, L"play %s repeat", alias); // 循环播放
+	mciSendString(cmd, NULL, 0, NULL);
 }
 
 void BindTimer(vector<TimerBind>& binds, HWND hWnd, Unit* unit, int& nextId, int elapse)
@@ -834,7 +855,14 @@ Unit* CreateUnit(int side, int x, int y, int health, int max_bomb)
 		unit->vy = 6;
 	}
 	else if (side == UNIT_SIDE_RIVAL) {
-		unit->img = bmp_Unit_Rival;
+		for (int i=0; i < MAX_ROLE_NUM; i++)   //电脑对手使用单人选角页选中的角色（pointer2）
+		{
+			if (pointer2[i] == 1)
+			{
+				unit->img = roles[i];
+				break;
+			}
+		}
 		unit->direction = UNIT_DIRECT_LEFT;
 		unit->vx = 3;
 		unit->vy = 3;
@@ -911,6 +939,7 @@ void InitStage(HWND hWnd, int stageID)
 	if (stageID == STAGE_CHOOSE1)
 	{
 		currentStage->timerOn = true;
+		P1done = false;  //从第一步（选自己）开始
 		//显示单人选择角色模式界面的按钮
 		for (int i = 0; i < buttons.size(); i++)
 		{
@@ -965,6 +994,20 @@ void InitStage(HWND hWnd, int stageID)
 void DrawExtraDuoRoles(HDC hdc_memBuffer, HDC hdc_loadBmp)
 {
 	// TODO: 补绘双人选角页的其余角色。
+	// 前两个角色 Paint 已画好，这里接着画第 3、4 个，位置规律相同（每个间隔 225）
+	for (int i = 2; i < (int)roles.size(); i++)
+	{
+		SelectObject(hdc_loadBmp, roles[i]);
+		TransparentBlt(
+			hdc_memBuffer,
+			50 + i * 225, 200,                     //界面上起始绘制点
+			3 * UNIT_SIZE_X, 3 * UNIT_SIZE_Y,      //界面上绘制宽度高度（放大 3 倍）
+			hdc_loadBmp,
+			0, 0,                                  //位图上绘制起点
+			UNIT_BITMAP_SIZE_X, UNIT_BITMAP_SIZE_Y,//位图上绘制宽度高度
+			RGB(255, 255, 255));
+	}
+	duoRoleNum = (int)roles.size();  // 可选角色数变为 4，箭头才能移到后两个角色上
 }
 
 void KeepDuoPointerInRange(int* selected, int* other, int roleNum)
@@ -988,28 +1031,19 @@ void UpdateArrow(HWND hWnd)
 	//单人选角色
 	if (currentStage->stageID == STAGE_CHOOSE1)
 	{
-		if (keyRightDown)
+		// 还没确认时移动自己的箭头（pointer），确认后移动电脑对手的箭头（pointer2）
+		int* p = P1done ? pointer2 : pointer;
+		int step = keyRightDown ? 1 : -1;  // 右移 +1，左移 -1
+		for (int i = 0; i < MAX_ROLE_NUM; i++)
 		{
-			for (int i=0; i<MAX_ROLE_NUM; i++)
+			if (p[i] == 1)
 			{
-				if (pointer[i] == 1)
-				{
-					pointer[i] = 0;
-					pointer[(i+1)%MAX_ROLE_NUM] = 1;
-					break;
-				}
-			}
-		}
-		if (keyLeftDown)
-		{
-			for (int i=0; i<MAX_ROLE_NUM; i++)
-			{
-				if (pointer[i] == 1)
-				{
-					pointer[i] = 0;
-					pointer[((i-1)%MAX_ROLE_NUM+MAX_ROLE_NUM)%MAX_ROLE_NUM] = 1;
-					break;
-				}
+				int next = (i + step + MAX_ROLE_NUM) % MAX_ROLE_NUM;  // 首尾循环
+				if (P1done && pointer[next] == 1)                     // 对手不能和自己同一个角色，再跳一格
+					next = (next + step + MAX_ROLE_NUM) % MAX_ROLE_NUM;
+				p[i] = 0;
+				p[next] = 1;
+				break;
 			}
 		}
 	}
@@ -1020,7 +1054,7 @@ void UpdateArrow(HWND hWnd)
 		KeepDuoPointerInRange(pointer, pointer2, roleNum);
 		KeepDuoPointerInRange(pointer2, pointer, roleNum);
 		//玩家1
-		if (keyDDown)
+		if (keyDDown && !P1done)      // 玩家1确认后锁定，不再移动
 		{
 			for (int i=0; i<roleNum; i++)
 			{
@@ -1041,7 +1075,7 @@ void UpdateArrow(HWND hWnd)
 				}
 			}
 		}
-		if (keyADown)
+		if (keyADown && !P1done)
 		{
 			for (int i=0; i<roleNum; i++)
 			{
@@ -1063,7 +1097,7 @@ void UpdateArrow(HWND hWnd)
 			}
 		}
 		//玩家2
-		if (keyRightDown)
+		if (keyRightDown && !P2done)  // 玩家2确认后锁定，不再移动
 		{
 			for (int i=0; i<roleNum; i++)
 			{
@@ -1084,7 +1118,7 @@ void UpdateArrow(HWND hWnd)
 				}
 			}
 		}
-		if (keyLeftDown)
+		if (keyLeftDown && !P2done)
 		{
 			for (int i=0; i<roleNum; i++)
 			{
@@ -1109,6 +1143,22 @@ void UpdateArrow(HWND hWnd)
 }
 
 
+// 道具拾取：人物中心所在格有道具就吃掉，触发对应效果
+void PickUpItem(HWND hWnd, Unit* unit)
+{
+	int row = unit->y / BG_CELL_HEIGHT;
+	int col = unit->x / BG_CELL_WIDTH;
+	if (!InMap(row, col) || item[row][col] == 4) return;  // 这一格没有道具
+
+	switch (item[row][col]) {
+	case 0: ApplySpeedPotion(hWnd, unit); break;  // 加速药水
+	case 1: ApplyHeart(unit);             break;  // 爱心
+	case 2: ApplyAmmoBox(unit);           break;  // 弹药匣
+	case 3: ApplyPowerPotion(unit);       break;  // 威力药水
+	}
+	item[row][col] = 4;  // 道具被吃掉，从地图上消失
+}
+
 // 刷新单位状态函数
 void UpdateUnits(HWND hWnd)
 {
@@ -1117,6 +1167,9 @@ void UpdateUnits(HWND hWnd)
 	if (currentStage->stageID == STAGE_1 && units[1]->alive == true) UnitBehaviour_Rival(hWnd);
 	UpdateBubbles(hWnd);
 
+	//移动完成后，活着的人检查脚下有没有道具（玩家和电脑都能吃）
+	for (int i = 0; i < (int)units.size(); i++)
+		if (units[i]->alive) PickUpItem(hWnd, units[i]);
 
 }
 
@@ -1172,8 +1225,11 @@ void MoveUnit(HWND hWnd, Unit* unit, bool keyLeft, bool keyUp, bool keyRight, bo
 //AI行为
 void UnitBehaviour_Rival(HWND hWnd) {
 	Unit* rival = units[1];
-	//距离足够近时尝试攻击主角
-	//动画运行到下一帧
+	// 先移动：决定方向并走一步（可能从 HOLD 切到 WALK，改变动画序列）
+	ComputerMove(hWnd);
+	//距离足够近时尝试攻击主角（用移动后的新坐标算距离）
+	BasicAttack(hWnd);
+	//动画运行到下一帧（必须放在最后，才能用上当前状态的动画序列）
 	rival->frame_id++;
 	rival->frame_id = rival->frame_id % rival->frame_count;
 	rival->frame_column = rival->frame_sequence[rival->frame_id];
@@ -1277,16 +1333,6 @@ void UpdateBubbles(HWND hWnd)
 void explode(HWND hWnd, Bubble* bubble)
 {
 	// TODO: 计算爆炸范围，处理阻挡、毁砖、掉落和命中。
-	// 在泡泡中心显示爆炸图片，200ms 后由 TimerUpdate 自动删除
-	Explosion* explosion = new Explosion();
-	explosion->img = bmp_explosion;
-	explosion->x = bubble->x;
-	explosion->y = bubble->y;
-	explosion->duration = 200;
-	explosion->timer_id = next_explosion_timer_id++;
-	explosions.push_back(explosion);
-	SetTimer(hWnd, explosion->timer_id, explosion->duration, NULL);
-
 	// flamed 记录哪些格子着火，泡泡所在格一定着火
 	bool flamed[12][12] = { false };
 	int row = bubble->y / BG_CELL_HEIGHT;
@@ -1311,6 +1357,24 @@ void explode(HWND hWnd, Bubble* bubble)
 				if (rand() % 2 == 0) item[r][c] = rand() % 4;  // 一半概率掉落道具
 				break;
 			}
+		}
+	}
+
+	// 动画效果：在每个着火格子中心都显示一张爆炸图片，拼成十字火焰
+	// 每张图各有一个 200ms 计时器，到点由 TimerUpdate 自动删除
+	for (int r = 0; r < 12; r++)
+	{
+		for (int c = 0; c < 12; c++)
+		{
+			if (!flamed[r][c]) continue;
+			Explosion* explosion = new Explosion();
+			explosion->img = bmp_explosion;
+			explosion->x = c * BG_CELL_WIDTH + BG_CELL_WIDTH / 2;
+			explosion->y = r * BG_CELL_HEIGHT + BG_CELL_HEIGHT / 2;
+			explosion->duration = 200;
+			explosion->timer_id = next_explosion_timer_id++;
+			explosions.push_back(explosion);
+			SetTimer(hWnd, explosion->timer_id, explosion->duration, NULL);
 		}
 	}
 
@@ -1537,6 +1601,19 @@ void DrawGameHud(HDC hdc_memBuffer, HDC hdc_loadBmp)
 				NUM_WIDTH, NUM_HEIGHT,  //位图上绘制宽度高度
 				RGB(255, 255, 255));
 	}
+	//进度检测：最后 30 秒在倒计时框内、数字下方显示红色提示（单人、双人共用）
+	if (currentStage->stageID >= STAGE_1 && currentStage->stageID <= STAGE_2 && count_down <= 30)
+	{
+		HFONT font = CreateFont(20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+			0, 0, 0, 0, L"微软雅黑");
+		HGDIOBJ oldFont = SelectObject(hdc_memBuffer, font);
+		SetBkMode(hdc_memBuffer, TRANSPARENT);
+		SetTextColor(hdc_memBuffer, RGB(220, 0, 0));
+		RECT rect = { WINDOW_WIDTH - SIDE_COL_WIDTH + 24, 186, WINDOW_WIDTH - 24, 214 };
+		DrawText(hdc_memBuffer, L"决战：加速 范围2", -1, &rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+		SelectObject(hdc_memBuffer, oldFont);  //恢复原字体并释放新建的字体
+		DeleteObject(font);
+	}
 }
 
 void DrawHelpScreen(HDC hdc_memBuffer, HDC hdc_loadBmp)
@@ -1556,7 +1633,7 @@ void DrawHelpScreen(HDC hdc_memBuffer, HDC hdc_loadBmp)
 	SetTextColor(hdc_memBuffer, RGB(60, 60, 60));  // 深灰色文字
 	RECT rect = { 0, 722, WINDOW_WIDTH, 752 };     // 文字区域：底部一整行
 	DrawText(hdc_memBuffer,
-		L"Esc 暂停 | 泡泡放下后会十字爆炸并炸毁砖块 | 炸倒对手即获胜，90 秒内未分胜负则超时",
+		L"Esc 暂停 | 十字爆炸可炸毁木箱 | 炸倒对手获胜，90 秒未分胜负超时 | 最后 30 秒加速、范围 2",
 		-1, &rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
 	// 恢复原字体并释放新建的字体
@@ -1670,6 +1747,20 @@ void ShowHelpButtons()
 void OpenPauseMenu(HWND hWnd)
 {
 	// TODO: 暂停对局并显示暂停菜单。
+	currentStage->timerOn = false;  // 计时器消息将被忽略：人物、泡泡、倒计时全部停住
+	StopBattleBgm();                // 暂停对局音乐
+
+	// 只显示"继续""重开""回首页"三个按钮
+	for (int i = 0; i < (int)buttons.size(); i++)
+	{
+		Button* button = buttons[i];
+		button->visible = (button->buttonID == BUTTON_CONTINUE
+			|| button->buttonID == BUTTON_RESTART
+			|| button->buttonID == BUTTON_HOMEPAGE);
+	}
+
+	// 暂停后不会再有计时器触发刷新，需要手动刷新一次，让按钮显示出来
+	InvalidateRect(hWnd, NULL, FALSE);
 }
 
 // TODO: 结束画面 —— 结算界面显示“再玩一次”，点击后回到标题
@@ -1689,7 +1780,7 @@ void SpawnBattleUnits(int stageID)
 {
 	switch (stageID) {
 	case STAGE_1:
-		pointer[0] = 1; pointer[1] = 0; pointer[2] = 0; pointer[3] = 0;
+		// 保留选角页的选择：pointer 是玩家，pointer2 是电脑对手
 		units.push_back(CreateUnit(UNIT_SIDE_ME, 97.75, 100, 1, 1));
 		units.push_back(CreateUnit(UNIT_SIDE_RIVAL, 545.75, 685, 1, 1));
 		break;
@@ -1705,10 +1796,22 @@ void SpawnBattleUnits(int stageID)
 // TODO: 基本移动 —— 四方向移动。单人用方向键；双人玩家1用 WASD，玩家2用方向键
 void BasicMove(HWND hWnd)
 {
-	if (units.size() >= 1 && units[0]->alive == true) {
-		MoveUnit(hWnd, units[0], keyLeftDown, keyUpDown, keyRightDown, keyDownDown);
-	}
+	if (units.size() < 2) return;
 
+	if (currentStage->stageID == STAGE_1)
+	{
+		// 单人：玩家用方向键（电脑由 AI 控制）
+		if (units[0]->alive)
+			MoveUnit(hWnd, units[0], keyLeftDown, keyUpDown, keyRightDown, keyDownDown);
+	}
+	else if (currentStage->stageID == STAGE_2)
+	{
+		// 双人：玩家1用 WASD，玩家2用方向键（参数顺序：左、上、右、下）
+		if (units[0]->alive)
+			MoveUnit(hWnd, units[0], keyADown, keyWDown, keyDDown, keySDown);
+		if (units[1]->alive)
+			MoveUnit(hWnd, units[1], keyLeftDown, keyUpDown, keyRightDown, keyDownDown);
+	}
 }
 
 // TODO: 基本移动 —— 单人按空格放泡泡；双人玩家1按空格，玩家2按回车
@@ -1725,30 +1828,39 @@ void PlaceBubbleByKey(HWND hWnd, WPARAM key)
 void PlayMenuBgm()
 {
 	// TODO: 播放菜单背景音乐。
+	// 关掉对局音乐，循环播放标题音乐（type mpegvideo：明确按 mp3 打开，兼容性更好）
+	mciSendString(L"close bgm2", NULL, 0, NULL);
+	PlayBgm(L"bgm1", L"open resources\\bgm1.mp3 type mpegvideo alias bgm1");
 }
 
 // TODO: 背景音乐 —— 进入对局后循环播放 bgm2
 void PlayBattleBgm()
 {
 	// TODO: 播放对局背景音乐。
+	// 关掉标题音乐，循环播放对局音乐（重开时 PlayBgm 会先关再开，从头播放）
+	mciSendString(L"close bgm1", NULL, 0, NULL);
+	PlayBgm(L"bgm2", L"open resources\\bgm2.mp3 type mpegvideo alias bgm2");
 }
 
 // TODO: 背景音乐 —— 暂停时停止对局音乐，继续时再接着播
 void StopBattleBgm()
 {
 	// TODO: 暂停对局背景音乐。
+	mciSendString(L"stop bgm2", NULL, 0, NULL);    // 只停止，文件保持打开，之后能接着播
 }
 
 // TODO: 背景音乐 —— 继续游戏时接着播放对局音乐
 void ResumeBattleBgm()
 {
 	// TODO: 继续播放对局背景音乐。
+	mciSendString(L"resume bgm2", NULL, 0, NULL);  // 从停止的位置继续
 }
 
 // TODO: 背景音乐 —— 离开对局或进入结算时关闭对局音乐
 void CloseBattleBgm()
 {
 	// TODO: 关闭对局背景音乐。
+	mciSendString(L"close bgm2", NULL, 0, NULL);   // 彻底关闭，下次进入对局要重新打开
 }
 
 // TODO: 倒计时 —— 开局 90 秒，每秒减 1
@@ -1769,6 +1881,16 @@ void TickCountdown(HWND hWnd)
 			FinishMatch(hWnd, STAGE_TIMEOUT);
 	}
 
+	// 进度检测：剩 30 秒进入决战，全体加速一次（用 == 保证只加一次；下一局重新创建人物，速度自动恢复）
+	if (count_down == 30)
+	{
+		for (int i = 0; i < (int)units.size(); i++)
+		{
+			units[i]->vx += 3;
+			units[i]->vy += 3;
+		}
+	}
+
 }
 
 // TODO: 泡泡冷却 —— 放下后若还没到上限，约 3 秒补回一颗
@@ -1787,46 +1909,162 @@ void FinishBubbleCooldown(Unit* unit)
 		unit->bubblesleft++;
 }
 
+// AI辅助：第 [row][col] 格是否在某颗泡泡的十字爆炸范围内（简化：不考虑墙的阻挡）
+bool InBlastRange(int row, int col)
+{
+	for (int i = 0; i < (int)bubbles.size(); i++)
+	{
+		int br = bubbles[i]->y / BG_CELL_HEIGHT;
+		int bc = bubbles[i]->x / BG_CELL_WIDTH;
+		int range = bubbles[i]->range;
+		if ((br == row && abs(bc - col) <= range) || (bc == col && abs(br - row) <= range))
+			return true;
+	}
+	return false;
+}
+
+// AI辅助：从 ok[d] 为 true 的方向中随机选一个，一个都没有返回 -1
+int RandomDirection(bool ok[4])
+{
+	int candidates[4], n = 0;
+	for (int d = 0; d < 4; d++)
+		if (ok[d]) candidates[n++] = d;
+	return n == 0 ? -1 : candidates[rand() % n];
+}
+
 // TODO: 电脑走位 —— 躲开泡泡的爆炸范围，并朝玩家走近
 void ComputerMove(HWND hWnd)
 {
 	// TODO: 实现 AI 的移动策略。
+	static int cnt = 0;  // 调用次数，用来控制追人时多久重新选一次方向
+	cnt++;
+	Unit* me = units[0];
+	Unit* rival = units[1];
+	int row = rival->y / BG_CELL_HEIGHT;
+	int col = rival->x / BG_CELL_WIDTH;
+
+	// 四个方向的行列偏移，下标就是方向宏：下0 左1 右2 上3
+	int dr[4] = { 1, 0, 0, -1 };
+	int dc[4] = { 0, -1, 1, 0 };
+
+	// 1. 判断每个方向：canGo = 没被挡住；safe = 没被挡住，且下一格不在爆炸范围内
+	bool canGo[4], safe[4];
+	for (int d = 0; d < 4; d++)
+	{
+		Unit test = *rival;  // 复制一份电脑，假装朝 d 方向走，看会不会撞到东西
+		test.direction = d;
+		canGo[d] = !Collision_detection(hWnd, &test);
+		safe[d] = canGo[d] && !InBlastRange(row + dr[d], col + dc[d]);
+	}
+
+	int dir = rival->direction;
+	if (InBlastRange(row, col))
+	{
+		// 2. 有危险：当前方向安全就继续跑；否则随机换一个安全方向；
+		//    没有安全方向（如刚在脚下放了泡泡）就先往能走的方向跑
+		if (!safe[dir])
+		{
+			int d = RandomDirection(safe);
+			if (d == -1 && !canGo[dir]) d = RandomDirection(canGo);
+			if (d != -1) dir = d;
+		}
+	}
+	else if (cnt % 10 == 0 || !safe[dir])
+	{
+		// 3. 没危险：每 10 帧（或当前方向不安全时）重新选方向，
+		//    在安全方向中选"走一格后离玩家最近"的那个
+		int best = -1, bestDist = 0;
+		for (int d = 0; d < 4; d++)
+		{
+			if (!safe[d]) continue;
+			int dx = rival->x + dc[d] * BG_CELL_WIDTH - me->x;
+			int dy = rival->y + dr[d] * BG_CELL_HEIGHT - me->y;
+			if (best == -1 || dx * dx + dy * dy < bestDist)
+			{
+				best = d;
+				bestDist = dx * dx + dy * dy;
+			}
+		}
+		if (best != -1) dir = best;
+	}
+
+	// 4. 更新方向、动画和位置：能走就走一步，否则原地站立
+	rival->direction = dir;
+	rival->frame_row = dir;
+	bool moving = canGo[dir] && (safe[dir] || InBlastRange(row, col));  // 没危险时不主动走进爆炸范围
+	rival->state = moving ? UNIT_STATE_WALK : UNIT_STATE_HOLD;
+	rival->frame_sequence = moving ? FRAMES_WALK : FRAMES_HOLD;
+	rival->frame_count = moving ? FRAMES_WALK_COUNT : FRAMES_HOLD_COUNT;
+	if (moving)
+	{
+		rival->x += (int)(dc[dir] * rival->vx);
+		rival->y += (int)(dr[dir] * rival->vy);
+	}
 }
 
 // TODO: 基本攻击 —— 电脑在距离足够近时放置泡泡
 void BasicAttack(HWND hWnd)
 {
 	// TODO: 判断 AI 放置炸弹的时机。
+	Unit* me = units[0];
+	Unit* rival = units[1];
+	if (!me->alive) return;  // 玩家已死就不再攻击
+
+	// 电脑与玩家的距离不超过一格（64 像素）就放泡泡
+	// 比较距离的平方，省去开方：dx² + dy² <= 64²
+	int dx = me->x - rival->x;
+	int dy = me->y - rival->y;
+	if (dx * dx + dy * dy <= BG_CELL_WIDTH * BG_CELL_WIDTH)
+		PlaceBubble(hWnd, rival);  // 数量不够或格子已有泡泡时，PlaceBubble 会自己拒绝
 }
 
 // TODO: 加速药水 —— 拾取后移速提高，持续约 3 秒
 void ApplySpeedPotion(HWND hWnd, Unit* unit)
 {
 	// TODO: 处理加速道具效果。
+	// 速度加 3，并单独登记一个 3 秒计时器，到期由 TimerUpdate 调用 EndSpeedPotion
+	// 每瓶各有自己的计时器，连吃多瓶也是"加几次减几次"，不会恢复错
+	unit->vx += 3;
+	unit->vy += 3;
+	BindTimer(speedTimers, hWnd, unit, next_speedup_timer_id, 3000);
 }
 
 // TODO: 加速药水 —— 约 3 秒后把这次提高的移速减回
 void EndSpeedPotion(Unit* unit)
 {
 	// TODO: 结束加速效果。
+	// 减回这一瓶加上的速度
+	unit->vx -= 3;
+	unit->vy -= 3;
 }
 
 // TODO: 死亡检测 —— 拾取爱心后加 1 点血，上限 3，因此要多挨几下
 void ApplyHeart(Unit* unit)
 {
 	// TODO: 处理回血道具效果。
+	// 加 1 点血，最多 3 点
+	if (unit->health < MAX_HEALTH)
+		unit->health++;
 }
 
 // TODO: 弹药匣 —— 拾取后可同时放置的泡泡数加 1，上限 3
 void ApplyAmmoBox(Unit* unit)
 {
 	// TODO: 处理弹药匣效果。
+	// 容量加 1（最多 3），同时立即多给一颗可用泡泡
+	if (unit->max_bomb < MAX_BOMB)
+	{
+		unit->max_bomb++;
+		unit->bubblesleft++;
+	}
 }
 
 // TODO: 威力药水 —— 拾取后获得加强次数，下一颗泡泡爆炸范围变为 2 格
 void ApplyPowerPotion(Unit* unit)
 {
 	// TODO: 处理威力药水效果。
+	// 加强次数加 1，下次放泡泡时 SetBubblePower 会让范围变成 2 格并消耗一次
+	unit->enhance_bomb++;
 }
 
 // TODO: 威力药水 —— 有加强次数时本颗泡泡范围为 2，并消耗一次
@@ -1838,6 +2076,9 @@ void SetBubblePower(Unit* unit, Bubble* newBubble)
 	if (unit->enhance_bomb > 0) {
 		newBubble->range = 2;
 		unit->enhance_bomb--;
+	}
+	else if (count_down <= 30) {
+		newBubble->range = 2;  // 进度检测：最后 30 秒决战阶段，泡泡范围也是 2 格（不消耗加强次数）
 	}
 }
 
@@ -1931,6 +2172,34 @@ void Paint(HWND hWnd)
 				break;
 			}
 		}
+		//确认自己的角色后，再绘制电脑对手的蓝色箭头
+		for (int i=0; i < MAX_ROLE_NUM && P1done; i++)
+		{
+			if (pointer2[i] == 1)
+			{
+				SelectObject(hdc_loadBmp, bmp_Arrow2);
+				TransparentBlt(
+					hdc_memBuffer,
+					125 + i * 225 ,100,                    //界面上起始绘制点
+					ARROW_SIZE_X, ARROW_SIZE_Y,    //界面上绘制宽度高度
+					hdc_loadBmp,
+					0,0,                    //位图上绘制起点
+					ARROW_SIZE_X, ARROW_SIZE_Y,   //位图上绘制宽度高度
+					RGB(255,255,255));
+				break;
+			}
+		}
+		//顶部提示当前在选谁
+		HFONT font = CreateFont(36, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+			0, 0, 0, 0, L"微软雅黑");
+		HGDIOBJ oldFont = SelectObject(hdc_memBuffer, font);
+		SetBkMode(hdc_memBuffer, TRANSPARENT);
+		SetTextColor(hdc_memBuffer, RGB(255, 255, 255));
+		RECT rect = { 0, 30, WINDOW_WIDTH, 80 };
+		DrawText(hdc_memBuffer, P1done ? L"第二步：选择电脑对手（蓝色箭头）" : L"第一步：选择你的角色（黄色箭头）",
+			-1, &rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+		SelectObject(hdc_memBuffer, oldFont);  //恢复原字体并释放新建的字体
+		DeleteObject(font);
 	}
 	//双人选角色界面
 	if (currentStage->stageID == STAGE_CHOOSE2)
